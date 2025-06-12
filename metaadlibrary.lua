@@ -590,10 +590,13 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
   local function extract_all_ads(json)
     local found = 0
     for k, v in pairs(json) do
-      if k == "ad_archive_id" then
-        discover_item(discovered_items, "ad:" .. v)
-        local page_id = json["page_id"]
-        if page_id and page_id ~= cjson.null then
+      if k == "ad_archive_id"
+        or k == "deeplinkAdID" then
+        if type(v) == "string" then
+          discover_item(discovered_items, "ad:" .. v)
+        end
+        local page_id = json["page_id"] or json["viewAllPageID"]
+        if page_id and page_id ~= cjson.null and type(page_id) == "string" then
           discover_item(discovered_items, "page:" .. page_id .. ":")
         end
         found = found + 1
