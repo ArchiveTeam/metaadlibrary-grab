@@ -803,9 +803,9 @@ wget.callbacks.httploop_result = function(url, err, http_stat)
     downloaded[url["url"]] = true
   end
 
- --[[ if string.match(url["url"], "graphql") then
-    os.execute("sleep 2")
-  end]]
+  if string.match(url["url"], "graphql") then
+    os.execute("sleep 1")
+  end
 
   if status_code >= 300 and status_code <= 399 then
     local newloc = urlparse.absolute(url["url"], http_stat["newloc"])
@@ -852,8 +852,8 @@ wget.callbacks.finish = function(start_time, end_time, wall_time, numurls, total
   end
   file:close()
   for key, data in pairs({
-    --["metaadlibrary-nhwx7mmrme8nj52e"] = discovered_items,
-    --["urls-omhd9lqfegay6nvp"] = discovered_outlinks
+    ["metaadlibrary-nhwx7mmrme8nj52e"] = discovered_items,
+    ["urls-omhd9lqfegay6nvp"] = discovered_outlinks
   }) do
     print("queuing for", string.match(key, "^(.+)%-"))
     local items = nil
