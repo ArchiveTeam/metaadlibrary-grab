@@ -77,7 +77,7 @@ if not WGET_AT:
 #
 # Update this each time you make a non-cosmetic change.
 # It will be added to the WARC files and reported to the tracker.
-VERSION = '20250610.01'
+VERSION = '20250612.01'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0'
 TRACKER_ID = 'metaadlibrary'
 TRACKER_HOST = 'legacy-api.arpa.li'
@@ -316,6 +316,14 @@ class WgetArgs(object):
             if item_type == 'ad':
                 wget_args.extend(['--warc-header', 'meta-ad: '+item_value])
                 wget_args.append('https://www.facebook.com/ads/library/?id='+item_value)
+            elif item_type == 'page':
+                page_id, country = item_value.split(':')
+                wget_args.extend(['--warc-header', 'meta-page: '+page_id])
+                if len(country) == '':
+                    country_param = ''
+                else:
+                    country_param = '&country=' + country
+                wget_args.append('https://www.facebook.com/ads/library/?active_status=all&ad_type=all{}&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id={}'.format(country_param, page_id))
             #elif item_type == 'search':
             #    pass
             else:

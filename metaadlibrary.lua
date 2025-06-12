@@ -30,8 +30,13 @@ local retry_url = false
 local is_initial_url = true
 
 local item_definitions = {
-  ["^https?://[^/]*facebook%.com/ads/library/%?id=([0-9]+)$"]="ad"
+  ["^https?://[^/]*facebook%.com/ads/library/%?id=([0-9]+)$"]="ad",
+  ["^https?://[^/]*facebook%.com/ads/library/.*[%?&]view_all_page_id=([0-9]+)"]="page"
 }
+
+cjson.encode_empty_table_as_object(false)
+
+math.randomseed(os.time())
 
 abort_item = function(item)
   abortgrab = true
@@ -102,7 +107,11 @@ end
 set_item = function(url)
   found = find_item(url)
   if found then
-    local newcontext = {}
+    local newcontext = {
+      ["graphql_countries"]={},
+      ["graphql_countries_i"]=0,
+      ["initial_url"]=url
+    }
     new_item_type = found["type"]
     new_item_value = found["value"]
     new_item_name = new_item_type .. ":" .. new_item_value
@@ -110,6 +119,15 @@ set_item = function(url)
     if new_item_name ~= item_name
       and not ids[post_id] then
       ids = {}
+      if new_item_type == "page" then
+        local country = string.match(url, "&country=([A-Z]+)")
+        if not country then
+          country = {}
+        else
+          country = {country}
+        end
+        newcontext["country"] = country
+      end
       context = newcontext
       item_value = new_item_value
       item_type = new_item_type
@@ -144,7 +162,8 @@ allowed = function(url, parenturl)
     return true
   end
 
-  if string.match(url, "^https?://[^/]*fbcdn%.net/") then
+  if string.match(url, "^https?://[^/]*fbcdn%.net/")
+    or url == "https://www.facebook.com/api/graphql/" then
     return true
   end
 
@@ -224,6 +243,8 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
   local urls = {}
   local html = nil
   local json = nil
+  local post_data = nil
+  local post_headers = nil
 
   downloaded[url] = true
 
@@ -266,14 +287,54 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     while string.find(url_, "&amp;") do
       url_ = string.gsub(url_, "&amp;", "&")
     end
-    if not processed(url_)
-      and not processed(url_ .. "/")
+    if (not processed(url_) or url == "https://www.facebook.com/api/graphql/")
       and allowed(url_, origurl) then
       local headers = {}
-      table.insert(urls, {
-        url=url_,
-        headers=headers
-      })
+      if url == "https://www.facebook.com/api/graphql/" then
+        if not post_headers or not post_data then
+          return nil
+        end
+        for k, v in pairs(post_headers) do
+          if v == "TODO" then
+            error("Found placeholder in HTTP headers.")
+          end
+          headers[k] = v
+        end
+      end
+      if post_data then
+        local body_data = nil
+        if type(post_data) == "table" then
+          body_data = ""
+          for k, v in pairs(post_data) do
+            if string.len(body_data) > 0 then
+              body_data = body_data .. "&"
+            end
+            if type(v) ~= "string" then
+              error("Found body data value that is not a string.")
+            end
+            if v == "TODO" then
+              error("Found placeholder in body data.")
+            end
+            body_data = body_data .. k .. "=" .. urlparse.escape(v)
+          end
+        else
+          body_data = post_data
+        end
+        if type(body_data) ~= "string" then
+          error("Body data could not be made into a string.")
+        end
+        table.insert(urls, {
+          url=url_,
+          headers=headers,
+          body_data=body_data,
+          method="POST"
+        })
+      else
+        table.insert(urls, {
+          url=url_,
+          headers=headers
+        })
+      end
       addedtolist[url_] = true
       addedtolist[url] = true
     end
@@ -374,27 +435,262 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     return result
   end
 
+  local function find_json_data(json, f)
+    local results = {}
+    if type(json) ~= "table" then
+      return results
+    end
+    for k, v in pairs(json) do
+      r = f(k, v)
+      if r then
+        table.insert(results, r)
+      else
+        for _, r in pairs(find_json_data(v, f)) do
+          table.insert(results, r)
+        end
+      end
+    end
+    return results
+  end
+
+  local function extract_strange_list(json, name, key, extra)
+    if not extra then
+      extra = function(k, v) return true end
+    end
+    return find_json_data(
+      json,
+      function(k, v)
+        if type(v) == "table"
+          and get_count(v) > 2
+          and v[1] == name
+          and extra(k, v) then
+          return v[3][key]
+        end
+        return nil
+      end
+    )
+  end
+
+  local function random_string(chars, i)
+    local result = ""
+    for j = 1, i do
+      local num = math.random(string.len(chars))
+      result = result .. string.sub(chars, num, num)
+    end
+    return result
+  end
+
+  local function copy_table(data)
+    local copy = {}
+    for k, v in pairs(data) do
+      copy[k] = v
+    end
+    return copy
+  end
+
+  --local int_to_base36(i)
+
+  local function index_graphql_data(json)
+    if string.match(url, "^https?://[^/]*facebook%.com/ads/library/") then
+      local lsd = extract_strange_list(json, "LSD", "token")[1]
+      local lsd_num = 0
+      for c in string.gmatch(lsd, "(.)") do
+        lsd_num = lsd_num + string.byte(c)
+      end
+      local connection_class = extract_strange_list(json, "WebConnectionClassServerGuess", "connectionClass")[1]
+      local jazoest = extract_strange_list(
+            json, "SprinkleConfig", "version",
+            function(k, v) return v[3]["param_name"] == "jazoest" end
+      )[1]
+      local site_data = find_json_data(
+        json,
+        function(k, v) if k == "SiteData" then return v end return nil end
+      )[1]
+      local variables = find_json_data(
+        json,
+        function(k, v) if k == "entryPointParams" then return v end return nil end
+      )[1]
+      --variables["countries"] = {variables["country"]}
+      variables["countries"] = "TODO"
+      variables["country"] = nil
+      variables["fetchPageInfo"] = nil
+      variables["fetchSharedDisclaimers"] = nil
+      variables["first"] = 30
+      context["graphql_req"] = 0
+      context["graphql_variables"] = variables
+      context["graphql_headers"] = {
+        ["X-ASBD-ID"]=random_string("0123456789", 6),
+        ["X-FB-LSD"]=lsd,
+        ["X-FB-Friendly-Name"]="TODO",
+        ["Referer"]=nil--url
+      }
+      context["graphql_data"] = {
+        ["av"]="0",
+        ["__aaid"]="0",
+        ["__user"]="0",
+        ["__a"]="1",
+        ["__req"]="TODO",
+        ["__hs"]=site_data["haste_session"],
+        ["dpr"]="1",
+        ["__ccg"]=connection_class,
+        ["__rev"]=tostring(site_data["server_revision"]),
+        ["__s"]=(
+          random_string("abcdefghijklmnopqrstuvwxyz0123456789", 6)
+          .. ":" ..
+          random_string("abcdefghijklmnopqrstuvwxyz0123456789", 6)
+          .. ":" ..
+          random_string("abcdefghijklmnopqrstuvwxyz0123456789", 6)
+        ),
+        ["__hsi"]=site_data["hsi"],
+        -- next four are just for keeping track what is loaded, ~static
+        ["__dyn"]="7xeUmwlECdwn8K2Wmh0no6u5U4e1Fx-ewSAwHwNw9G2S2q0_EtxG4o0B-qbwgE1EEb87C1xwEwgo9oO0n24oaEd86a3a1YwBgao6C0Mo6i588Etw8WfK1LwPxe2GewbCXwJwmEtwse5o4q0HU1IEGdw46wbLwrU6C2-0VE6O1Fw59G2O1TwmUaE2Two8",
+        ["__csr"]="hkIr9pfuiuW8J8x7888Ln9FKGJ2XBRyXAByrAQ8GHKq6Egx2ECi6bwSBG3m1hwyxy6Uy9xC3S1WwgHwQxS78669Bxa0y87qfxC2y1dzU3TBxO2K0alwm8e8-226Ef9Uhw9K16wk83rx603ROFo017vE08rk00-p80cCU0bSUKdw1j-0fzw72w",
+         ["__hsdp"]="gi8mg4ehuBh4UW1owji3EaqGgE450DCwrpF8KBzk1bwiU0A21VU4h0to6u7E9E8aihNDJ3EK1CgfE5608fwDwv80JGt07iy81G825w4HyU887-1dw1Gq0uO015mw1ny05vo",
+        ["__hblp"]="02Po0lVw1760dkw4pBw2hE0gbw2Ao0Ki04L80j-w1VG0fnw6ww1nS0OocE2Sw2lo0YK1fwho09-oW2u0YEdo1Uo5u1Tw",
+        ["__comet_req"]="1",
+        ["lsd"]=lsd,
+        ["jazoest"]=tostring(jazoest) .. tostring(lsd_num),
+        ["__spin_r"]=tostring(site_data["__spin_r"]),
+        ["__spin_b"]=site_data["__spin_b"],
+        ["__spin_t"]=tostring(site_data["__spin_t"]),
+        ["__jssesw"]="1",
+        ["fb_api_caller_class"]="RelayModern",
+        ["fb_api_req_friendly_name"]="TODO",
+        ["variables"]="TODO",
+        ["server_timestamps"]="true",
+        ["doc_id"]="TODO"
+    }
+    elseif not context["graphql_data"] or not context["graphql_headers"] then
+      error("No GraphQL data was found.")
+    end
+  end
+
+  local countries_count = get_count(context["graphql_countries"])
+
+  local function make_graphql_request(name, variables)
+    context["graphql_req"] = context["graphql_req"] + 1
+    post_data = copy_table(context["graphql_data"])
+    post_data["fb_api_req_friendly_name"] = name
+    post_data["doc_id"] = ({
+      ["AdLibrarySearchPaginationQuery"]="24394279933540792",
+      ["AdLibraryPageHoverCardQuery"]="29261964740117378",
+    })[name]
+    table.insert(context["graphql_countries"], countries_count+1, (variables["countries"] or ""))
+    post_data["__req"] = tostring(context["graphql_req"])
+    post_data["variables"] = cjson.encode(variables)
+    post_headers = copy_table(context["graphql_headers"])
+    post_headers["X-FB-Friendly-Name"] = name
+--print(cjson.encode(post_headers))
+--print(cjson.encode(post_data))
+    check("https://www.facebook.com/api/graphql/")
+    post_data = nil
+    post_headers = nil
+  end
+
+  local function extract_all_ads(json)
+    local found = 0
+    for k, v in pairs(json) do
+      if k == "ad_archive_id" then
+        discover_item(discovered_items, "ad:" .. v)
+        local page_id = json["page_id"]
+        if page_id and page_id ~= cjson.null then
+          discover_item(discovered_items, "page:" .. page_id .. ":")
+        end
+        found = found + 1
+      elseif type(v) == "table" then
+        found = found + extract_all_ads(v)
+      end
+    end
+    return found
+  end
+
+  local function check_blocked(s)
+    if not s then
+      local body, code, headers, status = http.request(context["initial_url"])
+      s = body
+    end
+    for _, key in pairs({"description", "summary"}) do
+      local text = string.match(s, "\"" .. key .. "\"%s*:%s*\"([^\"]+)")
+      if text
+        and string.match(string.lower(text), "blocked") then
+        print("Blocked: \"" .. text .. "\".")
+        io.stdout:flush()
+        wget.callbacks.finish()
+        error()
+      end
+    end
+  end
+
   if allowed(url)
     and status_code < 300
     and not string.match(url, "^https?://[^/]*fbcdn%.net/") then
     html = read_file(file)
-    if string.match(url, "/ads/library/%?id=[0-9]+$") then
-      local json = {}
+    if string.match(url, "^https?://[^/]*facebook%.com/ads/library/") then
+      context["html_json"] = {}
       for s in string.gmatch(html, "<script [^>]+data%-sjs>({.-})</script>") do
-        table.insert(json, cjson.decode(s))
+        table.insert(context["html_json"], cjson.decode(s))
       end
-      local ad_data = find_ad_data(json)
-      if get_count(ad_data) ~= 1 then
-        error("Expected to find one ad URL for " .. item_value .. ".")
+      check_blocked(html)
+      extract_all_ads(context["html_json"])
+      if string.match(url, "%?id=[0-9]+$") then
+        local ad_data = find_ad_data(context["html_json"])
+        if get_count(ad_data) ~= 1 then
+          error("Expected to find one ad URL for " .. item_value .. ".")
+        end
+        local inner_data = ad_data[1]["deeplinkAdCard"]["snapshot"]
+        if not string.match(cjson.encode(inner_data["images"]), "scontent[^\"/]*%.fbcdn%.net")
+          and not string.match(cjson.encode(inner_data["videos"]), "video[^\"/]*%.fbcdn%.net")
+          and not string.match(cjson.encode(inner_data["cards"]), "scontent[^\"/]*%.fbcdn%.net")
+          and not string.match(cjson.encode(inner_data["cards"]), "video[^\"/]*%.fbcdn%.net") then
+          error("Could not find image or video data.")
+        end
+        html = flatten_json(ad_data)
       end
-      local inner_data = ad_data[1]["deeplinkAdCard"]["snapshot"]
-      if not string.match(cjson.encode(inner_data["images"]), "scontent[^\"/]*%.fbcdn%.net")
-        and not string.match(cjson.encode(inner_data["videos"]), "video[^\"/]*%.fbcdn%.net")
-        and not string.match(cjson.encode(inner_data["cards"]), "scontent[^\"/]*%.fbcdn%.net")
-        and not string.match(cjson.encode(inner_data["cards"]), "video[^\"/]*%.fbcdn%.net") then
-        error("Could not find image or video data.")
+      if item_type == "page" then
+        index_graphql_data(context["html_json"])
+        make_graphql_request(
+          "AdLibraryPageHoverCardQuery",
+          {["pageID"]=item_value}
+        )
+        -- skipped SY SD KP IR CU
+        --for _, country in pairs({"AD", "AE", "AF", "AG", "AI", "AL", "AM", "AN", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "XK", "YE", "YT", "ZA", "ZM", "ZW"}) do
+          local variables = copy_table(context["graphql_variables"])
+--          variables["countries"] = {country}
+        variables["countries"] = context["country"]
+          make_graphql_request(
+            "AdLibrarySearchPaginationQuery",
+            variables
+          )
+        --end
+        return urls
       end
-      html = flatten_json(ad_data)
+    end
+    if url == "https://www.facebook.com/api/graphql/" then
+      context["graphql_countries_i"] = context["graphql_countries_i"] + 1
+      local countries = context["graphql_countries"][context["graphql_countries_i"]]
+      local json = cjson.decode(html)
+      local found = extract_all_ads(json)
+      local ad_library = json["data"]["ad_library_main"]
+      if ad_library then
+        if found == 0 then
+          wget.callbacks.finish()
+          print("You are likely banned temporarily. Sleeping 600 seconds.")
+          os.execute("sleep 600")
+          error()
+        end
+        local search_results = ad_library["search_results_connection"]
+        if search_results["page_info"]["has_next_page"] then
+          local variables = copy_table(context["graphql_variables"])
+          variables["cursor"] = search_results["page_info"]["end_cursor"]
+          variables["countries"] = countries
+          make_graphql_request(
+            "AdLibrarySearchPaginationQuery",
+            variables
+          )
+        end
+        return urls
+      end
+      html = flatten_json(json)
     end
     for newurl in string.gmatch(string.gsub(html, "&[qQ][uU][oO][tT];", '"'), '([^"]+)') do
       checknewurl(newurl)
@@ -504,6 +800,10 @@ wget.callbacks.httploop_result = function(url, err, http_stat)
     downloaded[url["url"]] = true
   end
 
+ --[[ if string.match(url["url"], "graphql") then
+    os.execute("sleep 2")
+  end]]
+
   if status_code >= 300 and status_code <= 399 then
     local newloc = urlparse.absolute(url["url"], http_stat["newloc"])
     if processed(newloc) or not allowed(newloc, url["url"]) then
@@ -549,8 +849,8 @@ wget.callbacks.finish = function(start_time, end_time, wall_time, numurls, total
   end
   file:close()
   for key, data in pairs({
-    ["metaadlibrary-nhwx7mmrme8nj52e"] = discovered_items,
-    ["urls-omhd9lqfegay6nvp"] = discovered_outlinks
+    --["metaadlibrary-nhwx7mmrme8nj52e"] = discovered_items,
+    --["urls-omhd9lqfegay6nvp"] = discovered_outlinks
   }) do
     print("queuing for", string.match(key, "^(.+)%-"))
     local items = nil
