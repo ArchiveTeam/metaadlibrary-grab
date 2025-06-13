@@ -592,14 +592,15 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     for k, v in pairs(json) do
       if k == "ad_archive_id"
         or k == "deeplinkAdID" then
-        if type(v) == "string" then
+        if type(v) == "string"
+          and v ~= item_value then
+          found = found + 1
           discover_item(discovered_items, "ad:" .. v)
         end
         local page_id = json["page_id"] or json["viewAllPageID"]
         if page_id and page_id ~= cjson.null and type(page_id) == "string" then
           discover_item(discovered_items, "page:" .. page_id .. ":")
         end
-        found = found + 1
       elseif type(v) == "table" then
         found = found + extract_all_ads(v)
       end
@@ -653,6 +654,7 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
         if found == 0 then
           wget.callbacks.finish()
           print("Error! Sleeping 10 seconds.")
+          io.stdout:flush()
           os.execute("sleep 10")
           error()
         end
@@ -684,6 +686,7 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
         if found == 0 then
           wget.callbacks.finish()
           print("You are likely banned temporarily. Sleeping 600 seconds.")
+          io.stdout:flush()
           os.execute("sleep 600")
           error()
         end
