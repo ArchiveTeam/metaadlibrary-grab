@@ -634,7 +634,7 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
         table.insert(context["html_json"], cjson.decode(s))
       end
       check_blocked(html)
-      extract_all_ads(context["html_json"])
+      local found = extract_all_ads(context["html_json"])
       if string.match(url, "%?id=[0-9]+$") then
         local ad_data = find_ad_data(context["html_json"])
         if get_count(ad_data) ~= 1 then
@@ -650,6 +650,12 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
         html = flatten_json(ad_data)
       end
       if item_type == "page" then
+        if found == 0 then
+          wget.callbacks.finish()
+          print("Error! Sleeping 10 seconds.")
+          os.execute("sleep 10")
+          error()
+        end
         index_graphql_data(context["html_json"])
         make_graphql_request(
           "AdLibraryPageHoverCardQuery",
