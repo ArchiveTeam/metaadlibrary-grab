@@ -812,8 +812,9 @@ wget.callbacks.httploop_result = function(url, err, http_stat)
     downloaded[url["url"]] = true
   end
 
-  if string.match(url["url"], "graphql") then
-    os.execute("sleep 1")
+  if string.match(url["url"], "graphql")
+    or string.match(url["url"], "/ads/library/") then
+    os.execute("sleep 2")
   end
 
   if status_code >= 300 and status_code <= 399 then
