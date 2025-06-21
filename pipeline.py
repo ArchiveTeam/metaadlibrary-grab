@@ -77,7 +77,7 @@ if not WGET_AT:
 #
 # Update this each time you make a non-cosmetic change.
 # It will be added to the WARC files and reported to the tracker.
-VERSION = '20250620.01'
+VERSION = '20250620.02'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0'
 TRACKER_ID = 'metaadlibrary'
 TRACKER_HOST = 'legacy-api.arpa.li'
@@ -188,6 +188,31 @@ class SetBadUrls(SimpleTask):
                 items.pop(index)
                 items_lower.pop(index)
         item['item_name'] = '\0'.join(items)
+
+
+def set_concurrency(item):
+    if '--concurrent' in sys.argv:
+        concurrency = int(sys.argv[sys.argv.index('--concurrent')+1])
+    else:
+        concurrency = os.getenv('CONCURRENT_ITEMS')
+        if concurrency is None:
+            concurrency = 2
+    item['concurrency'] = str(concurrency)
+
+
+class DelayStart(SimpleTask):
+    PAUSE_PER_ITEM = 2
+
+    def __init__(self):
+        SimpleTask.__init__(self, 'DelayStart')
+        self._initial_count = 0
+
+    def process(self, item):
+        set_concurrency(item)
+        if self._initial_count >= int(item['concurrency']):
+            return None
+        self._initial_count += 1
+        time.sleep(random.random()*self.PAUSE_PER_ITEM*2)
 
 
 class MaybeSendDoneToTracker(SendDoneToTracker):
@@ -301,13 +326,7 @@ class WgetArgs(object):
             '--warc-zstd-dict', ItemInterpolation('%(item_dir)s/zstdict'),
         ])
 
-        if '--concurrent' in sys.argv:
-            concurrency = int(sys.argv[sys.argv.index('--concurrent')+1])
-        else:
-            concurrency = os.getenv('CONCURRENT_ITEMS')
-            if concurrency is None:
-                concurrency = 2
-        item['concurrency'] = str(concurrency)
+        set_concurrency(item)
 
         for item_name in item['item_name'].split('\0'):
             wget_args.extend(['--warc-header', 'x-wget-at-project-item-name: '+item_name])
@@ -360,6 +379,7 @@ pipeline = Pipeline(
         .format(TRACKER_HOST, TRACKER_ID, MULTI_ITEM_SIZE),
         downloader, VERSION),
     PrepareDirectories(warc_prefix=TRACKER_ID),
+    DelayStart(),
     WgetDownload(
         WgetArgs(),
         max_tries=1,
