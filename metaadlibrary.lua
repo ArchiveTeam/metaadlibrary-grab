@@ -26,6 +26,8 @@ local discovered_items = {}
 local bad_items = {}
 local ids = {}
 
+local force_queued = {}
+
 local retry_url = false
 local is_initial_url = true
 
@@ -163,7 +165,8 @@ allowed = function(url, parenturl)
   end
 
   if string.match(url, "^https?://[^/]*fbcdn%.net/")
-    or url == "https://www.facebook.com/api/graphql/" then
+    or url == "https://www.facebook.com/api/graphql/"
+    or string.match(url, "^https?://[^/]*facebook%.com/__rd_verify_") then
     return true
   end
 
@@ -245,6 +248,7 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
   local json = nil
   local post_data = nil
   local post_headers = nil
+  local force_queue = false
 
   downloaded[url] = true
 
@@ -287,8 +291,12 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     while string.find(url_, "&amp;") do
       url_ = string.gsub(url_, "&amp;", "&")
     end
-    if (not processed(url_) or url == "https://www.facebook.com/api/graphql/")
-      and allowed(url_, origurl) then
+    if allowed(url_, origurl)
+      and(
+        not processed(url_)
+        or url == "https://www.facebook.com/api/graphql/"
+        or force_queue
+      ) then
       local headers = {}
       if url == "https://www.facebook.com/api/graphql/" then
         if not post_headers or not post_data then
@@ -299,6 +307,12 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
             error("Found placeholder in HTTP headers.")
           end
           headers[k] = v
+        end
+      end
+      if force_queue then
+        force_queued[url_] = (force_queued[url_] or 0) + 1
+        for i = 1 , force_queued[url_] do
+          url_ = url_ .. "#"
         end
       end
       if post_data then
@@ -625,10 +639,33 @@ wget.callbacks.get_urls = function(file, url, is_css, iri)
     end
   end
 
+  if status_code == 403
+    and string.match(url, "/ads/library/%?id=[0-9]+$") then
+    html = read_file(file)
+    if not context["rd_todo"] then
+      context["rd_todo"] = {}
+    end
+    context["rd_todo"][url] = true
+    local rd_url = string.match(html, "['\"](/__rd_verify_[^'\"]+)['\"]")
+    if not rd_url then
+      error("Expected finding /__rd_verify_ URL.")
+    end
+    post_data = ""
+    check(urlparse.absolute(url, rd_url))
+    post_data = nil
+  end
+
   if allowed(url)
     and status_code < 300
     and not string.match(url, "^https?://[^/]*fbcdn%.net/") then
     html = read_file(file)
+    if string.match(url, "^https?://[^/]*facebook%.com/__rd_verify_") then
+      for url, _ in pairs(context["rd_todo"]) do
+        force_queue = true
+        check(url)
+        force_queue = false
+      end
+    end
     if string.match(url, "^https?://[^/]*facebook%.com/ads/library/") then
       context["html_json"] = {}
       for s in string.gmatch(html, "<script [^>]+data%-sjs>({.-})</script>") do
@@ -740,6 +777,22 @@ wget.callbacks.write_to_warc = function(url, http_stat)
     error("No item name found.")
   end
   is_initial_url = false
+  if (
+      status_code == 200
+      and string.match(url["url"], "^https?://[^/]*facebook%.com/__rd_verify_")
+    )
+    or (
+      http_stat["statcode"] == 403
+      and string.match(url["url"], "/ads/library/%?id=[0-9]+$")
+      and string.match(read_file(http_stat["local_file"]), "/__rd_verify_")
+    ) then
+    if not string.match(url["url"], "/__rd_verify_") then
+      print("Need to get cookies.")
+    end
+    retry_url = false
+    tries = 0
+    return false
+  end
   if http_stat["statcode"] ~= 200 then
     retry_url = true
     return false

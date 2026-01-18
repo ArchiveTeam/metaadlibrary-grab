@@ -77,7 +77,7 @@ if not WGET_AT:
 #
 # Update this each time you make a non-cosmetic change.
 # It will be added to the WARC files and reported to the tracker.
-VERSION = '20250804.01'
+VERSION = '20260118.01'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0'
 TRACKER_ID = 'metaadlibrary'
 TRACKER_HOST = 'legacy-api.arpa.li'
@@ -277,11 +277,11 @@ class ZstdDict(object):
 
 class WgetArgs(object):
     def realize(self, item):
+        cookies_path = os.path.join(item['data_dir'].rsplit('/', 1)[0], 'cookies.txt')
         wget_args = [
             WGET_AT,
             '-U', USER_AGENT,
             '-nv',
-            '--no-cookies',
             '--host-lookups', 'dns',
             '--hosts-file', '/dev/null',
             '--resolvconf-file', '/dev/null',
@@ -303,6 +303,9 @@ class WgetArgs(object):
             '--tries', 'inf',
             '--domains', 'facebook.com',
             '--span-hosts',
+            '--load-cookies', cookies_path,
+            '--save-cookies', cookies_path,
+            '--keep-session-cookies',
             '--waitretry', '30',
             '--warc-file', ItemInterpolation('%(item_dir)s/%(warc_file_base)s'),
             '--warc-header', 'operator: Archive Team',
